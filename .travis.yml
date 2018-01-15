@@ -88,7 +88,6 @@ before_install:
       export EXTRA_PACKAGES="$EXTRA_PACKAGES Cython pillow sphinx_rtd_theme==0.2.5b1.post1 pytest";
     else
       export TEST_OPTS="--flake8 --mpl";
-      export EXTRA_PACKAGES="$EXTRA_PACKAGES pydocstyle<2.1";
       if [[ $TRAVIS_PYTHON_VERSION == 3.6 ]]; then
         export EXTRA_PACKAGES="$EXTRA_PACKAGES flake8-bugbear";
       fi;
