@@ -6,10 +6,11 @@
 import numpy as np
 import pytest
 
-from metpy.calc import (cape_cin, density, dewpoint, dewpoint_rh, dry_lapse, dry_static_energy,
-                        el, equivalent_potential_temperature, isentropic_interpolation,
-                        lcl, lfc, mixed_layer, mixed_parcel, mixing_ratio,
-                        mixing_ratio_from_relative_humidity,
+from metpy.calc import (brunt_vaisala_frequency, brunt_vaisala_frequency_squared,
+                        brunt_vaisala_period, cape_cin, density, dewpoint, dewpoint_rh,
+                        dry_lapse, dry_static_energy, el, equivalent_potential_temperature,
+                        isentropic_interpolation, lcl, lfc, mixed_layer, mixed_parcel,
+                        mixing_ratio, mixing_ratio_from_relative_humidity,
                         mixing_ratio_from_specific_humidity, moist_lapse,
                         moist_static_energy, most_unstable_cape_cin, most_unstable_parcel,
                         parcel_profile, potential_temperature,
@@ -23,7 +24,8 @@ from metpy.calc import (cape_cin, density, dewpoint, dewpoint_rh, dry_lapse, dry
                         specific_humidity_from_mixing_ratio,
                         surface_based_cape_cin, thickness_hydrostatic,
                         thickness_hydrostatic_from_relative_humidity, vapor_pressure,
-                        virtual_potential_temperature, virtual_temperature)
+                        virtual_potential_temperature, virtual_temperature,
+                        wet_bulb_temperature)
 from metpy.calc.thermo import _find_append_zero_crossings
 from metpy.testing import assert_almost_equal, assert_array_almost_equal, assert_nan
 from metpy.units import units
@@ -828,3 +830,87 @@ def test_saturation_mixing_ratio_dimensions():
     p = 998. * units.mbar
     temp = 20 * units.celsius
     assert str(saturation_mixing_ratio(p, temp).units) == 'dimensionless'
+
+
+def test_mixing_ratio_from_rh_dimensions():
+    """Verify mixing ratio from RH returns a dimensionless number."""
+    p = 1000. * units.mbar
+    temperature = 0. * units.degC
+    rh = 100. * units.percent
+    assert (str(mixing_ratio_from_relative_humidity(rh, temperature, p).units) ==
+            'dimensionless')
+
+
+@pytest.fixture
+def bv_data():
+    """Return height and potential temperature data for testing Brunt-Vaisala functions."""
+    heights = [1000., 1500., 2000., 2500.] * units('m')
+    potential_temperatures = [[290., 290., 290., 290.],
+                              [292., 293., 293., 292.],
+                              [294., 296., 293., 293.],
+                              [296., 295., 293., 296.]] * units('K')
+    return heights, potential_temperatures
+
+
+def test_brunt_vaisala_frequency_squared():
+    """Test Brunt-Vaisala frequency squared function."""
+    truth = [[1.35264138e-04, 2.02896207e-04, 3.04344310e-04, 1.69080172e-04],
+             [1.34337671e-04, 2.00818771e-04, 1.00409386e-04, 1.00753253e-04],
+             [1.33423810e-04, 6.62611486e-05, 0, 1.33879181e-04],
+             [1.32522297e-04, -1.99457288e-04, 0., 2.65044595e-04]] * units('s^-2')
+    bv_freq_sqr = brunt_vaisala_frequency_squared(bv_data()[0], bv_data()[1])
+    assert_almost_equal(bv_freq_sqr, truth, 6)
+
+
+def test_brunt_vaisala_frequency():
+    """Test Brunt-Vaisala frequency function."""
+    truth = [[0.01163031, 0.01424416, 0.01744547, 0.01300308],
+             [0.01159041, 0.01417105, 0.01002045, 0.01003759],
+             [0.01155092, 0.00814010, 0., 0.01157062],
+             [0.01151183, np.nan, 0., 0.01628019]] * units('s^-1')
+    bv_freq = brunt_vaisala_frequency(bv_data()[0], bv_data()[1])
+    assert_almost_equal(bv_freq, truth, 6)
+
+
+def test_brunt_vaisala_period():
+    """Test Brunt-Vaisala period function."""
+    truth = [[540.24223556, 441.10593821, 360.16149037, 483.20734521],
+             [542.10193894, 443.38165033, 627.03634320, 625.96540075],
+             [543.95528431, 771.88106656, np.nan, 543.02940230],
+             [545.80233643, np.nan, np.nan, 385.94053328]] * units('s')
+    bv_period = brunt_vaisala_period(bv_data()[0], bv_data()[1])
+    assert_almost_equal(bv_period, truth, 6)
+
+
+def test_wet_bulb_temperature():
+    """Test wet bulb calculation with scalars."""
+    val = wet_bulb_temperature(1000 * units.hPa, 25 * units.degC, 15 * units.degC)
+    truth = 18.34345936 * units.degC  # 18.59 from NWS calculator
+    assert_almost_equal(val, truth)
+
+
+def test_wet_bulb_temperature_1d():
+    """Test wet bulb calculation with 1d list."""
+    pressures = [1013, 1000, 990] * units.hPa
+    temperatures = [25, 20, 15] * units.degC
+    dewpoints = [20, 15, 10] * units.degC
+    val = wet_bulb_temperature(pressures, temperatures, dewpoints)
+    truth = [21.4449794, 16.7368576, 12.0656909] * units.degC
+    # 21.58, 16.86, 12.18 from NWS Calculator
+    assert_array_almost_equal(val, truth)
+
+
+def test_wet_bulb_temperature_2d():
+    """Test wet bulb calculation with 2d list."""
+    pressures = [[1013, 1000, 990],
+                 [1012, 999, 989]] * units.hPa
+    temperatures = [[25, 20, 15],
+                    [24, 19, 14]] * units.degC
+    dewpoints = [[20, 15, 10],
+                 [19, 14, 9]] * units.degC
+    val = wet_bulb_temperature(pressures, temperatures, dewpoints)
+    truth = [[21.4449794, 16.7368576, 12.0656909],
+             [20.5021631, 15.801218, 11.1361878]] * units.degC
+    # 21.58, 16.86, 12.18
+    # 20.6, 15.9, 11.2 from NWS Calculator
+    assert_array_almost_equal(val, truth)

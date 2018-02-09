@@ -12,7 +12,7 @@ import scipy.integrate as si
 import scipy.optimize as so
 
 from .tools import (_greater_or_close, _less_or_close, broadcast_indices, find_intersections,
-                    get_layer, interp)
+                    first_derivative, get_layer, interp)
 from ..constants import Cp_d, epsilon, g, kappa, Lv, P0, Rd
 from ..package_tools import Exporter
 from ..units import atleast_1d, check_units, concatenate, units
@@ -842,7 +842,8 @@ def mixing_ratio_from_relative_humidity(relative_humidity, temperature, pressure
     relative_humidity_from_mixing_ratio, saturation_mixing_ratio
 
     """
-    return relative_humidity * saturation_mixing_ratio(pressure, temperature)
+    return (relative_humidity *
+            saturation_mixing_ratio(pressure, temperature)).to('dimensionless')
 
 
 @exporter.export
@@ -1710,3 +1711,172 @@ def thickness_hydrostatic_from_relative_humidity(pressure, temperature, relative
 
     return thickness_hydrostatic(pressure, temperature, mixing=mixing, bottom=bottom,
                                  depth=depth)
+
+
+@exporter.export
+@check_units('[length]', '[temperature]')
+def brunt_vaisala_frequency_squared(heights, potential_temperature, axis=0):
+    r"""Calculate the square of the Brunt-Vaisala frequency.
+
+    Brunt-Vaisala frequency squared (a measure of atmospheric stability) is given by the
+    formula:
+
+    .. math:: N^2 = \frac{g}{\theta} \frac{d\theta}{dz}
+
+    This formula is based off of Equations 3.75 and 3.77 in [Hobbs2006]_.
+
+    Parameters
+    ----------
+    heights : array-like
+        One-dimensional profile of atmospheric height
+    potential_temperature : array-like
+        Atmospheric potential temperature
+    axis : int, optional
+        The axis corresponding to vertical in the potential temperature array, defaults to 0.
+
+    Returns
+    -------
+    array-like
+        The square of the Brunt-Vaisala frequency.
+
+    See Also
+    --------
+    brunt_vaisala_frequency, brunt_vaisala_period, potential_temperature
+
+    """
+    # Ensure validity of temperature units
+    potential_temperature = potential_temperature.to('K')
+
+    # Calculate and return the square of Brunt-Vaisala frequency
+    return g / potential_temperature * first_derivative(potential_temperature, x=heights,
+                                                        axis=axis)
+
+
+@exporter.export
+@check_units('[length]', '[temperature]')
+def brunt_vaisala_frequency(heights, potential_temperature, axis=0):
+    r"""Calculate the Brunt-Vaisala frequency.
+
+    This function will calculate the Brunt-Vaisala frequency as follows:
+
+    .. math:: N = \left( \frac{g}{\theta} \frac{d\theta}{dz} \right)^\frac{1}{2}
+
+    This formula based off of Equations 3.75 and 3.77 in [Hobbs2006]_.
+
+    This function is a wrapper for `brunt_vaisala_frequency_squared` that filters out negative
+    (unstable) quanties and takes the square root.
+
+    Parameters
+    ----------
+    heights : array-like
+        One-dimensional profile of atmospheric height
+    potential_temperature : array-like
+        Atmospheric potential temperature
+    axis : int, optional
+        The axis corresponding to vertical in the potential temperature array, defaults to 0.
+
+    Returns
+    -------
+    array-like
+        Brunt-Vaisala frequency.
+
+    See Also
+    --------
+    brunt_vaisala_frequency_squared, brunt_vaisala_period, potential_temperature
+
+    """
+    bv_freq_squared = brunt_vaisala_frequency_squared(heights, potential_temperature,
+                                                      axis=axis)
+    bv_freq_squared[bv_freq_squared.magnitude < 0] = np.nan
+
+    return np.sqrt(bv_freq_squared)
+
+
+@exporter.export
+@check_units('[length]', '[temperature]')
+def brunt_vaisala_period(heights, potential_temperature, axis=0):
+    r"""Calculate the Brunt-Vaisala period.
+
+    This function is a helper function for `brunt_vaisala_frequency` that calculates the
+    period of oscilation as in Exercise 3.13 of [Hobbs2006]_:
+
+    .. math:: \tau = \frac{2\pi}{N}
+
+    Returns `NaN` when :math:`N^2 > 0`.
+
+    Parameters
+    ----------
+    heights : array-like
+        One-dimensional profile of atmospheric height
+    potential_temperature : array-like
+        Atmospheric potential temperature
+    axis : int, optional
+        The axis corresponding to vertical in the potential temperature array, defaults to 0.
+
+    Returns
+    -------
+    array-like
+        Brunt-Vaisala period.
+
+    See Also
+    --------
+    brunt_vaisala_frequency, brunt_vaisala_frequency_squared, potential_temperature
+
+    """
+    bv_freq_squared = brunt_vaisala_frequency_squared(heights, potential_temperature,
+                                                      axis=axis)
+    bv_freq_squared[bv_freq_squared.magnitude <= 0] = np.nan
+
+    return 2 * np.pi / np.sqrt(bv_freq_squared)
+
+
+@exporter.export
+@check_units('[pressure]', '[temperature]', '[temperature]')
+def wet_bulb_temperature(pressure, temperature, dewpoint):
+    """Calculate the wet-bulb temperature using Normand's rule.
+
+    This function calculates the wet-bulb temperature using the Normand method. The LCL is
+    computed, and that parcel brought down to the starting pressure along a moist adiabat.
+    Norman method (and others) described and compared by [Knox2017]_.
+
+    Parameters
+    ----------
+    pressure : `pint.Quantity`
+        Initial atmospheric pressure
+    temperature : `pint.Quantity`
+        Initial atmospheric temperature
+    dewpoint : `pint.Quantity`
+        Initial atmospheric dewpoint
+
+    Returns
+    -------
+    array-like
+        Wet-bulb temperature
+
+    See Also
+    --------
+    lcl, moist_lapse
+
+    """
+    if not hasattr(pressure, 'shape'):
+        pressure = atleast_1d(pressure)
+        temperature = atleast_1d(temperature)
+        dewpoint = atleast_1d(dewpoint)
+
+    it = np.nditer([pressure, temperature, dewpoint, None],
+                   op_dtypes=['float', 'float', 'float', 'float'],
+                   flags=['buffered'])
+
+    for press, temp, dewp, ret in it:
+        press = press * pressure.units
+        temp = temp * temperature.units
+        dewp = dewp * dewpoint.units
+        lcl_pressure, lcl_temperature = lcl(press, temp, dewp)
+        moist_adiabat_temperatures = moist_lapse(concatenate([lcl_pressure, press]),
+                                                 lcl_temperature)
+        ret[...] = moist_adiabat_temperatures[-1]
+
+    # If we started with a scalar, return a scalar
+    if it.operands[3].size == 1:
+        return it.operands[3][0] * moist_adiabat_temperatures.units
+    return it.operands[3] * moist_adiabat_temperatures.units
